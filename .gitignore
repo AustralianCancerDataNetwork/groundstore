@@ -1,0 +1,43 @@
+# Python bytecode and local tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.tox/
+.nox/
+.hypothesis/
+
+# Build and distribution artefacts
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.local.toml
+*.local.yaml
+
+# Local databases and generated application data
+*.db
+*.db-*
+data/
+site/
+_design/
+
+# Editors and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

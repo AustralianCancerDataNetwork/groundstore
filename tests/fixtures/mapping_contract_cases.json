@@ -1,0 +1,180 @@
+{
+  "schema_version": "contract-v1",
+  "cases": [
+    {
+      "case_id": "pbs_exact_one_to_one",
+      "source_namespace": "pbs",
+      "lifecycle_status": "complete",
+      "decision_status": "mapped",
+      "outcome_code": "pbs.mapped_via_exact",
+      "input": {
+        "source_kind": "drug",
+        "source_key": "PBS:2024:12345",
+        "source_fingerprint": "sha256:pbs-exact-1"
+      },
+      "candidates": [
+        {
+          "candidate_id": "c-pbs-exact-1",
+          "target_namespace": "omop",
+          "target_vocabulary_id": "RxNorm",
+          "target_concept_id": "111",
+          "role": "ingredient",
+          "rank": 1,
+          "score": 0.99,
+          "evidence_ids": ["e-pbs-exact-1"]
+        }
+      ],
+      "selected_candidate_ids": ["c-pbs-exact-1"],
+      "evidence": [
+        {
+          "evidence_id": "e-pbs-exact-1",
+          "evidence_type": "exact_normalized",
+          "method": "pbs_drug_name_to_rxnorm",
+          "payload": {"matched_field": "drug_name"}
+        }
+      ]
+    },
+    {
+      "case_id": "pbs_combination_one_to_many",
+      "source_namespace": "pbs",
+      "lifecycle_status": "complete",
+      "decision_status": "mapped",
+      "outcome_code": "pbs.mapped_via_decomposition",
+      "input": {
+        "source_kind": "drug",
+        "source_key": "PBS:2024:67890",
+        "source_fingerprint": "sha256:pbs-combination-1"
+      },
+      "candidates": [
+        {
+          "candidate_id": "c-pbs-combo-1",
+          "target_namespace": "omop",
+          "target_vocabulary_id": "RxNorm",
+          "target_concept_id": "222",
+          "role": "ingredient",
+          "rank": 1,
+          "score": 0.95,
+          "evidence_ids": ["e-pbs-combo-1"]
+        },
+        {
+          "candidate_id": "c-pbs-combo-2",
+          "target_namespace": "omop",
+          "target_vocabulary_id": "RxNorm",
+          "target_concept_id": "333",
+          "role": "ingredient",
+          "rank": 2,
+          "score": 0.94,
+          "evidence_ids": ["e-pbs-combo-1"]
+        }
+      ],
+      "selected_candidate_ids": ["c-pbs-combo-1", "c-pbs-combo-2"],
+      "evidence": [
+        {
+          "evidence_id": "e-pbs-combo-1",
+          "evidence_type": "decomposition",
+          "method": "pbs_combination_fields",
+          "payload": {"component_count": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "eviq_component_only_review",
+      "source_namespace": "eviq_hemonc",
+      "lifecycle_status": "complete",
+      "decision_status": "needs_review",
+      "outcome_code": "eviq.component_only",
+      "input": {
+        "source_kind": "protocol_variant",
+        "source_key": "EVIQ:320:variant-1",
+        "source_fingerprint": "sha256:eviq-component-only-1"
+      },
+      "candidates": [
+        {
+          "candidate_id": "c-eviq-review-1",
+          "target_namespace": "hemonc",
+          "target_code": "HEMONC:REGIMEN:001",
+          "target_concept_id": "444",
+          "role": "regimen",
+          "rank": 1,
+          "score": 0.71,
+          "evidence_ids": ["e-eviq-component-1"]
+        }
+      ],
+      "selected_candidate_ids": [],
+      "evidence": [
+        {
+          "evidence_id": "e-eviq-component-1",
+          "evidence_type": "component_compatibility",
+          "method": "hemonc_component_intersection",
+          "payload": {"schedule_compared": false}
+        }
+      ]
+    },
+    {
+      "case_id": "eviq_redirected_incomplete",
+      "source_namespace": "eviq_hemonc",
+      "lifecycle_status": "incomplete",
+      "decision_status": "needs_review",
+      "outcome_code": "eviq.redirected",
+      "source_status": "redirected",
+      "input": {
+        "source_kind": "protocol",
+        "source_key": "EVIQ:5129",
+        "source_fingerprint": "sha256:eviq-redirect-1"
+      },
+      "candidates": [],
+      "selected_candidate_ids": [],
+      "evidence": [
+        {
+          "evidence_id": "e-eviq-redirect-1",
+          "evidence_type": "source_state",
+          "method": "eviq_redirect_alias",
+          "payload": {"canonical_protocol_id": null}
+        }
+      ]
+    },
+    {
+      "case_id": "unmappable_input",
+      "source_namespace": "pbs",
+      "lifecycle_status": "complete",
+      "decision_status": "unmappable",
+      "outcome_code": "pbs.no_defensible_target",
+      "input": {
+        "source_kind": "indication",
+        "source_key": "PBS:INDICATION:999",
+        "source_fingerprint": "sha256:unmappable-1"
+      },
+      "candidates": [],
+      "selected_candidate_ids": [],
+      "evidence": [
+        {
+          "evidence_id": "e-unmappable-1",
+          "evidence_type": "review",
+          "method": "candidate_exhaustion",
+          "payload": {"candidate_count": 0}
+        }
+      ]
+    },
+    {
+      "case_id": "failed_run_resume",
+      "source_namespace": "pbs",
+      "lifecycle_status": "failed",
+      "decision_status": null,
+      "outcome_code": "pbs.stage_failed",
+      "input": {
+        "source_kind": "drug",
+        "source_key": "PBS:2024:77777",
+        "source_fingerprint": "sha256:resume-1",
+        "last_completed_stage": "exact_normalized",
+        "retryable": true
+      },
+      "candidates": [],
+      "selected_candidate_ids": [],
+      "evidence": [],
+      "error": {
+        "stage": "umls_crosswalk",
+        "message": "temporary upstream failure"
+      }
+    }
+  ]
+}

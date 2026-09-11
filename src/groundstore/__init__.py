@@ -1,6 +1,11 @@
 """Shared mapping-task contracts and persistence for Groundworkers workflows."""
 
-from .context import MappingEvidencePacket, MappingReadContext, MappingReviewHandoff
+from .context import (
+    MappingEvidencePacket,
+    MappingReadContext,
+    MappingReviewHandoff,
+    MappingReviewPage,
+)
 from .contracts import (
     DecisionStatus,
     LifecycleStatus,
@@ -23,6 +28,7 @@ __all__ = [
     "MappingInputSpec",
     "MappingReadContext",
     "MappingReviewHandoff",
+    "MappingReviewPage",
     "MappingRunSpec",
     "MappingStore",
     "create_groundstore_engine",

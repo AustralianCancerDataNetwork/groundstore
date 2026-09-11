@@ -79,3 +79,75 @@ def test_read_context_builds_json_safe_packet_and_review_handoff(store):
     assert handoff.source_namespace == "pbs"
     assert handoff.metadata == {"queue": "pbs"}
     assert handoff.model_dump(mode="json")["packet"] == payload
+
+
+def test_read_context_paginates_review_inputs_and_filters_latest_status(store):
+    run = store.get_or_create_run(
+        MappingRunSpec(
+            source_namespace="pbs",
+            source_fingerprint="snapshot-page",
+            target_system="omop",
+            algorithm_version="mapper-1",
+            policy_version="policy-1",
+        )
+    )
+    for key in ("B", "A", "C"):
+        input_record = store.upsert_input(
+            run.id,
+            MappingInputSpec(
+                source_namespace="pbs",
+                source_kind="drug",
+                source_key=key,
+                source_fingerprint=f"input-{key}",
+                normalized_projection={"name": key},
+            ),
+        )
+        candidate = store.upsert_candidate(
+            input_record.id,
+            MappingCandidateSpec(
+                target_namespace="omop",
+                target_vocabulary_id="RxNorm",
+                target_concept_id=key,
+                target_grain="ingredient",
+                method="exact",
+                rank=1,
+            ),
+        )
+        store.record_decision(
+            input_record.id,
+            MappingDecisionSpec(
+                decision_status=(
+                    DecisionStatus.AMBIGUOUS if key != "B" else DecisionStatus.MAPPED
+                ),
+                selected_candidate_ids=[candidate.id],
+                outcome_code="pbs.test",
+            ),
+        )
+    store.upsert_input(
+        run.id,
+        MappingInputSpec(
+            source_namespace="pbs",
+            source_kind="drug",
+            source_key="D",
+            source_fingerprint="input-D",
+            normalized_projection={"name": "D"},
+        ),
+    )
+    store.update_run(run.id, lifecycle_status="complete")
+
+    context = MappingReadContext(store)
+    page = context.review_page(
+        "pbs", run_id=run.id, page=1, page_size=1, decision_status="ambiguous"
+    )
+    payload = page.model_dump(mode="json")
+
+    assert payload["schema_version"] == "groundstore.mapping-review-page.v1"
+    assert payload["total_items"] == 2
+    assert payload["page_count"] == 2
+    assert payload["items"][0]["source_key"] == "A"
+    assert payload["items"][0]["candidate_count"] == 1
+    assert payload["items"][0]["decision_status"] == "ambiguous"
+
+    pending = context.review_page("pbs", run_id=run.id, decision_status="pending")
+    assert pending.total_items == 1
+    assert pending.items[0]["source_key"] == "D"

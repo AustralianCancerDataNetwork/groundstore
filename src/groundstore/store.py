@@ -10,8 +10,8 @@ from typing import Any
 from uuid import uuid4
 
 from oa_configurator import ResolvedDatabase, Resolver
-from sqlalchemy import Engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import Engine, and_, func, select
+from sqlalchemy.orm import aliased, sessionmaker
 
 from .contracts import (
     MappingCandidateSpec,
@@ -361,6 +361,105 @@ class MappingStore:
     def get_inputs(self, run_id: str) -> list[MappingInput]:
         with self._session_factory() as session:
             return list(session.scalars(select(MappingInput).where(MappingInput.run_id == run_id)))
+
+    def get_review_inputs(
+        self,
+        run_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+        decision_status: str | None = None,
+    ) -> tuple[list[tuple[MappingInput, str, list[MappingCandidate]]], int]:
+        """Return one stable, database-paginated review page.
+
+        The synthetic ``pending`` status represents an input without a
+        decision.  Other statuses are source-independent strings so adapters
+        may add meaningful outcomes without changing Groundstore's contract.
+        """
+        if offset < 0:
+            raise ValueError("offset cannot be negative")
+        if limit < 1:
+            raise ValueError("limit must be positive")
+
+        latest_versions = (
+            select(
+                MappingDecision.input_id,
+                func.max(MappingDecision.decision_version).label("decision_version"),
+            )
+            .group_by(MappingDecision.input_id)
+            .subquery()
+        )
+        latest_decision = aliased(MappingDecision)
+        decision_status_expression = func.coalesce(latest_decision.decision_status, "pending")
+        with self._session_factory() as session:
+            count_query = (
+                select(func.count(MappingInput.id))
+                .select_from(MappingInput)
+                .outerjoin(
+                    latest_versions,
+                    latest_versions.c.input_id == MappingInput.id,
+                )
+                .outerjoin(
+                    latest_decision,
+                    and_(
+                        latest_decision.input_id == MappingInput.id,
+                        latest_decision.decision_version
+                        == latest_versions.c.decision_version,
+                    ),
+                )
+                .where(MappingInput.run_id == run_id)
+            )
+            page_query = (
+                select(MappingInput, decision_status_expression)
+                .select_from(MappingInput)
+                .outerjoin(
+                    latest_versions,
+                    latest_versions.c.input_id == MappingInput.id,
+                )
+                .outerjoin(
+                    latest_decision,
+                    and_(
+                        latest_decision.input_id == MappingInput.id,
+                        latest_decision.decision_version
+                        == latest_versions.c.decision_version,
+                    ),
+                )
+                .where(MappingInput.run_id == run_id)
+                .order_by(
+                    MappingInput.source_kind,
+                    MappingInput.source_key,
+                    MappingInput.id,
+                )
+                .offset(offset)
+                .limit(limit)
+            )
+            if decision_status is not None:
+                count_query = count_query.where(decision_status_expression == decision_status)
+                page_query = page_query.where(decision_status_expression == decision_status)
+
+            total = int(session.scalar(count_query) or 0)
+            rows = list(session.execute(page_query))
+            input_ids = [input_record.id for input_record, _ in rows]
+            candidates_by_input: dict[str, list[MappingCandidate]] = {
+                input_id: [] for input_id in input_ids
+            }
+            if input_ids:
+                candidates = session.scalars(
+                    select(MappingCandidate)
+                    .where(MappingCandidate.input_id.in_(input_ids))
+                    .order_by(MappingCandidate.input_id, MappingCandidate.rank)
+                )
+                for candidate in candidates:
+                    candidates_by_input[candidate.input_id].append(candidate)
+
+            return [
+                (
+                    input_record,
+                    str(status),
+                    candidates_by_input[input_record.id],
+                )
+                for input_record, status in rows
+            ], total
 
     def latest_successful_run(
         self, source_namespace: str, *, target_system: str | None = None

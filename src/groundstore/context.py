@@ -53,6 +53,21 @@ class MappingReviewHandoff(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class MappingReviewPage(BaseModel):
+    """Stable, paginated summary for selecting mapping inputs to review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "groundstore.mapping-review-page.v1"
+    run: dict[str, Any] | None = None
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    page_count: int = Field(ge=0)
+    total_items: int = Field(ge=0)
+    decision_status: str | None = None
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
 @dataclass(frozen=True, slots=True)
 class MappingReadContext:
     """Read-only Groundstore façade for host tools and review consumers."""
@@ -126,6 +141,73 @@ class MappingReadContext:
             candidates=candidate_payloads,
             evidence=unattached,
             decision=decision_payload,
+        )
+
+    def review_page(
+        self,
+        source_namespace: str,
+        *,
+        run_id: str | None = None,
+        target_system: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+        decision_status: str | None = None,
+    ) -> MappingReviewPage:
+        """Return a database-paginated review summary for one mapping run."""
+        if page < 1:
+            raise ValueError("page must be positive")
+        if page_size < 1:
+            raise ValueError("page_size must be positive")
+
+        run = self.store.get_run(run_id) if run_id is not None else None
+        if run_id is None:
+            run = self.store.latest_successful_run(
+                source_namespace, target_system=target_system
+            )
+        if run is None:
+            return MappingReviewPage(
+                run=None,
+                page=page,
+                page_size=page_size,
+                page_count=0,
+                total_items=0,
+                decision_status=decision_status,
+            )
+        if run.source_namespace != source_namespace:
+            raise ValueError(f"mapping run {run.id} does not belong to {source_namespace}")
+        if target_system is not None and run.target_system != target_system:
+            raise ValueError(f"mapping run {run.id} does not target {target_system}")
+
+        records, total = self.store.get_review_inputs(
+            run.id,
+            offset=(page - 1) * page_size,
+            limit=page_size,
+            decision_status=decision_status,
+        )
+        page_count = (total + page_size - 1) // page_size
+        return MappingReviewPage(
+            run=_run_payload(run),
+            page=page,
+            page_size=page_size,
+            page_count=page_count,
+            total_items=total,
+            decision_status=decision_status,
+            items=[
+                {
+                    "input_id": input_record.id,
+                    "source_namespace": input_record.source_namespace,
+                    "source_kind": input_record.source_kind,
+                    "source_key": input_record.source_key,
+                    "lifecycle_status": input_record.lifecycle_status,
+                    "decision_status": status,
+                    "candidate_count": len(candidates),
+                    "candidates": [
+                        _review_candidate_payload(candidate) for candidate in candidates
+                    ],
+                    "normalized_projection": input_record.normalized_projection,
+                }
+                for input_record, status, candidates in records
+            ],
         )
 
     def review_handoff(
@@ -204,6 +286,26 @@ def _candidate_payload(candidate: MappingCandidate) -> dict[str, Any]:
         "rationale": candidate.rationale,
         "metadata": candidate.metadata_,
         "created_at": candidate.created_at.isoformat(),
+    }
+
+
+def _review_candidate_payload(candidate: MappingCandidate) -> dict[str, Any]:
+    payload = _candidate_payload(candidate)
+    return {
+        key: payload[key]
+        for key in (
+            "id",
+            "target_namespace",
+            "target_vocabulary_id",
+            "target_concept_id",
+            "target_code",
+            "target_grain",
+            "target_role",
+            "method",
+            "rank",
+            "score",
+            "confidence",
+        )
     }
 
 

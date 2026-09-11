@@ -1,3 +1,5 @@
+import pytest
+
 from groundstore import (
     DecisionStatus,
     LifecycleStatus,
@@ -20,6 +22,11 @@ def _run_spec() -> MappingRunSpec:
         algorithm_version="mapper-1",
         policy_version="policy-1",
     )
+
+
+def test_candidate_requires_a_target_identifier() -> None:
+    with pytest.raises(ValueError, match="target_concept_id or target_code"):
+        MappingCandidateSpec(target_namespace="omop", method="exact")
 
 
 def test_store_persists_multiplicity_evidence_and_versioned_decisions(
@@ -93,7 +100,19 @@ def test_store_persists_multiplicity_evidence_and_versioned_decisions(
     assert decision.decision_version == 1
     assert len(decision.selected_candidates) == 2
     assert len(decision.history) == 1
-    assert store.latest_decision(input_record.id).id == decision.id
+    latest = store.latest_decision(input_record.id)
+    assert latest is not None
+    assert latest.id == decision.id
+
+    with pytest.raises(ValueError, match="different candidate or decision"):
+        store.add_evidence(
+            input_record.id,
+            MappingEvidenceSpec(
+                evidence_key="components",
+                evidence_type="decision_context",
+            ),
+            decision_id=decision.id,
+        )
 
     revised = store.record_decision(
         input_record.id,
@@ -109,6 +128,14 @@ def test_store_persists_multiplicity_evidence_and_versioned_decisions(
         "lifecycle_status": {LifecycleStatus.PENDING.value: 1},
         "decision_status": {DecisionStatus.MAPPED.value: 1},
     }
+    page, total = store.get_inputs_page(
+        run.id,
+        limit=1,
+        decision_status=DecisionStatus.MAPPED.value,
+    )
+    assert total == 1
+    assert page[0][0].id == input_record.id
+    assert page[0][1] == DecisionStatus.MAPPED.value
 
 
 def test_store_reuses_run_and_input_after_failure(store: MappingStore) -> None:
@@ -150,5 +177,42 @@ def test_store_reuses_run_and_input_after_failure(store: MappingStore) -> None:
     assert updated.retry_count == 1
     assert updated.last_error == "source timeout"
 
-    store.update_run(run.id, lifecycle_status=LifecycleStatus.COMPLETE.value, last_error=None)
-    assert store.latest_successful_run("eviq_hemonc", target_system="omop").id == run.id
+    store.update_run(run.id, lifecycle_status=LifecycleStatus.COMPLETE.value)
+    current_run = store.get_run(run.id)
+    assert current_run is not None
+    assert current_run.last_error == "timeout"
+    store.update_run(run.id, last_error=None)
+    successful = store.latest_successful_run("eviq_hemonc", target_system="omop")
+    assert successful is not None
+    assert successful.id == run.id
+
+
+def test_store_deletes_selected_runs_and_dependents(store: MappingStore) -> None:
+    run = store.get_or_create_run(_run_spec())
+    input_record = store.upsert_input(
+        run.id,
+        MappingInputSpec(
+            source_namespace="eviq_hemonc",
+            source_kind="regimen",
+            source_key="delete-me",
+            source_fingerprint="delete-me",
+        ),
+    )
+    store.upsert_candidate(
+        input_record.id,
+        MappingCandidateSpec(
+            target_namespace="hemonc",
+            target_concept_id="1001",
+            target_grain="regimen",
+            method="component_match",
+        ),
+    )
+
+    retained_spec = _run_spec().model_copy(update={"algorithm_version": "mapper-2"})
+    retained = store.get_or_create_run(retained_spec)
+
+    assert len(store.find_runs(algorithm_version="mapper-1")) == 1
+    assert store.delete_runs([run.id]) == 1
+    assert store.get_run(run.id) is None
+    assert store.get_inputs(run.id) == []
+    assert store.get_run(retained.id) is not None

@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -15,6 +16,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    and_,
+    column,
+    or_,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -137,6 +141,19 @@ class MappingEvidence(Base):
     __tablename__ = "mapping_evidence"
     __table_args__ = (
         UniqueConstraint("input_id", "evidence_key", name="uq_mapping_evidence_key"),
+        CheckConstraint(
+            or_(
+                and_(
+                    column("candidate_id").is_not(None),
+                    column("decision_id").is_(None),
+                ),
+                and_(
+                    column("candidate_id").is_(None),
+                    column("decision_id").is_not(None),
+                ),
+            ),
+            name="ck_mapping_evidence_one_attachment",
+        ),
         Index("ix_mapping_evidence_candidate", "candidate_id"),
         Index("ix_mapping_evidence_decision", "decision_id"),
     )

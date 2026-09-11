@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from types import TracebackType
+from typing import Any, Self, cast
 from uuid import uuid4
 
 from oa_configurator import ResolvedDatabase, Resolver
 from sqlalchemy import Engine, and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased, sessionmaker
 
 from .contracts import (
@@ -30,6 +32,13 @@ from .models import (
     MappingInput,
     MappingRun,
 )
+
+
+class _Unset:
+    """Sentinel for distinguishing omitted values from explicit nulls."""
+
+
+_UNSET = _Unset()
 
 
 class MappingStore:
@@ -59,6 +68,21 @@ class MappingStore:
         )
         return cls(engine)
 
+    def close(self) -> None:
+        """Release the SQLAlchemy engine owned by this store."""
+        self.engine.dispose()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
     def get_or_create_run(self, spec: MappingRunSpec) -> MappingRun:
         """Return the stable run for *spec*, preserving resumable state."""
         with self._session_factory() as session:
@@ -82,7 +106,22 @@ class MappingStore:
                     updated_at=now,
                 )
                 session.add(run)
-                session.commit()
+                try:
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+                    run = session.scalar(
+                        select(MappingRun).where(
+                            MappingRun.source_namespace == spec.source_namespace,
+                            MappingRun.source_fingerprint == spec.source_fingerprint,
+                            MappingRun.target_system == spec.target_system,
+                            MappingRun.target_release == spec.target_release,
+                            MappingRun.algorithm_version == spec.algorithm_version,
+                            MappingRun.policy_version == spec.policy_version,
+                        )
+                    )
+                    if run is None:
+                        raise
             return run
 
     def update_run(
@@ -90,7 +129,7 @@ class MappingStore:
         run_id: str,
         *,
         lifecycle_status: str | None = None,
-        last_error: str | None = None,
+        last_error: str | None | _Unset = _UNSET,
     ) -> MappingRun:
         with self._session_factory() as session:
             run = session.get(MappingRun, run_id)
@@ -98,7 +137,8 @@ class MappingStore:
                 raise KeyError(f"unknown mapping run: {run_id}")
             if lifecycle_status is not None:
                 run.lifecycle_status = lifecycle_status
-            run.last_error = last_error
+            if last_error is not _UNSET:
+                run.last_error = cast(str | None, last_error)
             run.updated_at = _now()
             session.commit()
             return run
@@ -126,7 +166,21 @@ class MappingStore:
                     updated_at=now,
                 )
                 session.add(record)
-                session.commit()
+                try:
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+                    record = session.scalar(
+                        select(MappingInput).where(
+                            MappingInput.run_id == run_id,
+                            MappingInput.source_namespace == spec.source_namespace,
+                            MappingInput.source_kind == spec.source_kind,
+                            MappingInput.source_key == spec.source_key,
+                            MappingInput.source_fingerprint == spec.source_fingerprint,
+                        )
+                    )
+                    if record is None:
+                        raise
             return record
 
     def update_input(
@@ -135,7 +189,7 @@ class MappingStore:
         *,
         lifecycle_status: str | None = None,
         retry_count: int | None = None,
-        last_error: str | None = None,
+        last_error: str | None | _Unset = _UNSET,
     ) -> MappingInput:
         """Update processing state without replacing mapping evidence."""
         with self._session_factory() as session:
@@ -148,7 +202,8 @@ class MappingStore:
                 if retry_count < 0:
                     raise ValueError("retry_count cannot be negative")
                 record.retry_count = retry_count
-            record.last_error = last_error
+            if last_error is not _UNSET:
+                record.last_error = cast(str | None, last_error)
             record.updated_at = _now()
             session.commit()
             return record
@@ -160,7 +215,11 @@ class MappingStore:
                 session.scalars(
                     select(MappingCandidate)
                     .where(MappingCandidate.input_id == input_id)
-                    .order_by(MappingCandidate.rank, MappingCandidate.created_at)
+                    .order_by(
+                        MappingCandidate.rank,
+                        MappingCandidate.created_at,
+                        MappingCandidate.id,
+                    )
                 )
             )
 
@@ -184,7 +243,18 @@ class MappingStore:
                     created_at=_now(),
                 )
                 session.add(candidate)
-                session.commit()
+                try:
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+                    candidate = session.scalar(
+                        select(MappingCandidate).where(
+                            MappingCandidate.input_id == input_id,
+                            MappingCandidate.candidate_key == key,
+                        )
+                    )
+                    if candidate is None:
+                        raise
             return candidate
 
     def add_evidence(
@@ -223,6 +293,14 @@ class MappingStore:
                     MappingEvidence.evidence_key == spec.evidence_key,
                 )
             )
+            if evidence is not None and (
+                evidence.candidate_id != candidate_id
+                or evidence.decision_id != decision_id
+            ):
+                raise ValueError(
+                    f"evidence key {spec.evidence_key!r} is already attached "
+                    "to a different candidate or decision"
+                )
             if evidence is None:
                 evidence = MappingEvidence(
                     id=_id(),
@@ -239,6 +317,13 @@ class MappingStore:
     def record_decision(self, input_id: str, spec: MappingDecisionSpec) -> MappingDecision:
         """Append a decision version and its immutable history event."""
         with self._session_factory() as session:
+            input_record = session.scalar(
+                select(MappingInput)
+                .where(MappingInput.id == input_id)
+                .with_for_update()
+            )
+            if input_record is None:
+                raise KeyError(f"unknown mapping input: {input_id}")
             if len(spec.selected_candidate_ids) != len(set(spec.selected_candidate_ids)):
                 raise ValueError("selected candidates must be unique")
             selected = list(
@@ -336,46 +421,173 @@ class MappingStore:
     def coverage(self, run_id: str) -> dict[str, Any]:
         """Return lifecycle and latest decision counts for a run."""
         with self._session_factory() as session:
-            inputs = list(
-                session.scalars(select(MappingInput).where(MappingInput.run_id == run_id))
+            lifecycle_rows = session.execute(
+                select(MappingInput.lifecycle_status, func.count(MappingInput.id))
+                .where(MappingInput.run_id == run_id)
+                .group_by(MappingInput.lifecycle_status)
             )
-            decisions = []
-            for input_record in inputs:
-                decision = session.scalar(
-                    select(MappingDecision)
-                    .where(MappingDecision.input_id == input_record.id)
-                    .order_by(MappingDecision.decision_version.desc())
+            lifecycle_status = {status: int(count) for status, count in lifecycle_rows}
+            latest_versions = (
+                select(
+                    MappingDecision.input_id,
+                    func.max(MappingDecision.decision_version).label("decision_version"),
                 )
-                if decision is not None:
-                    decisions.append(decision)
+                .join(MappingInput, MappingInput.id == MappingDecision.input_id)
+                .where(MappingInput.run_id == run_id)
+                .group_by(MappingDecision.input_id)
+                .subquery()
+            )
+            decision_rows = session.execute(
+                select(MappingDecision.decision_status, func.count(MappingDecision.id))
+                .join(
+                    latest_versions,
+                    and_(
+                        latest_versions.c.input_id == MappingDecision.input_id,
+                        latest_versions.c.decision_version
+                        == MappingDecision.decision_version,
+                    ),
+                )
+                .group_by(MappingDecision.decision_status)
+            )
             return {
-                "input_count": len(inputs),
-                "lifecycle_status": dict(Counter(item.lifecycle_status for item in inputs)),
-                "decision_status": dict(Counter(item.decision_status for item in decisions)),
+                "input_count": sum(lifecycle_status.values()),
+                "lifecycle_status": lifecycle_status,
+                "decision_status": {
+                    status: int(count) for status, count in decision_rows
+                },
             }
 
     def get_run(self, run_id: str) -> MappingRun | None:
         with self._session_factory() as session:
             return session.get(MappingRun, run_id)
 
+    def run_summary(self, run_id: str) -> dict[str, Any]:
+        """Return run metadata and efficient lifecycle/decision counts."""
+        run = self.get_run(run_id)
+        if run is None:
+            raise KeyError(f"unknown mapping run: {run_id}")
+        coverage = self.coverage(run_id)
+        return {
+            "schema_version": "groundstore.mapping-run-summary.v1",
+            "run_id": run.id,
+            "source_namespace": run.source_namespace,
+            "source_fingerprint": run.source_fingerprint,
+            "source_snapshot": run.source_snapshot,
+            "target_system": run.target_system,
+            "target_release": run.target_release,
+            "algorithm_version": run.algorithm_version,
+            "policy_version": run.policy_version,
+            "run_lifecycle_status": run.lifecycle_status,
+            "last_error": run.last_error,
+            "created_at": run.created_at.isoformat(),
+            "updated_at": run.updated_at.isoformat(),
+            "input_count": coverage["input_count"],
+            "lifecycle_counts": coverage["lifecycle_status"],
+            "decision_counts": coverage["decision_status"],
+        }
+
+    def progress(self, run_id: str) -> dict[str, Any]:
+        """Return queue and processing counts for one mapping run."""
+        run = self.get_run(run_id)
+        if run is None:
+            raise KeyError(f"unknown mapping run: {run_id}")
+        coverage = self.coverage(run_id)
+        lifecycle = coverage["lifecycle_status"]
+        pending = lifecycle.get("pending", 0)
+        in_progress = lifecycle.get("in_progress", 0)
+        complete = lifecycle.get("complete", 0)
+        failed = lifecycle.get("failed", 0)
+        incomplete = lifecycle.get("incomplete", 0)
+        latest_input_update = None
+        with self._session_factory() as session:
+            latest_input_update = session.scalar(
+                select(func.max(MappingInput.updated_at)).where(
+                    MappingInput.run_id == run_id
+                )
+            )
+        last_updated = (
+            max(run.updated_at, latest_input_update)
+            if latest_input_update
+            else run.updated_at
+        )
+        return {
+            "schema_version": "groundstore.mapping-progress.v1",
+            "run_id": run.id,
+            "run_status": run.lifecycle_status,
+            "total_inputs": coverage["input_count"],
+            "queued_count": pending,
+            "active_count": in_progress,
+            "complete_count": complete,
+            "retryable_count": failed,
+            "blocked_count": incomplete,
+            "remaining_count": coverage["input_count"] - complete,
+            "decision_counts": coverage["decision_status"],
+            "last_updated_at": last_updated.isoformat(),
+        }
+
+    def find_runs(
+        self,
+        *,
+        algorithm_version: str | None = None,
+        run_ids: Sequence[str] | None = None,
+        source_namespace: str | None = None,
+        target_system: str | None = None,
+        policy_version: str | None = None,
+    ) -> list[MappingRun]:
+        """Find runs using exact, intentionally narrow cleanup filters."""
+        with self._session_factory() as session:
+            query = select(MappingRun).order_by(MappingRun.created_at, MappingRun.id)
+            if algorithm_version is not None:
+                query = query.where(MappingRun.algorithm_version == algorithm_version)
+            if run_ids is not None:
+                if not run_ids:
+                    return []
+                query = query.where(MappingRun.id.in_(run_ids))
+            if source_namespace is not None:
+                query = query.where(MappingRun.source_namespace == source_namespace)
+            if target_system is not None:
+                query = query.where(MappingRun.target_system == target_system)
+            if policy_version is not None:
+                query = query.where(MappingRun.policy_version == policy_version)
+            return list(session.scalars(query))
+
+    def delete_runs(self, run_ids: Sequence[str]) -> int:
+        """Delete exactly the identified runs and their dependent records."""
+        if not run_ids:
+            return 0
+        with self._session_factory() as session:
+            runs = list(
+                session.scalars(select(MappingRun).where(MappingRun.id.in_(run_ids)))
+            )
+            for run in runs:
+                session.delete(run)
+            session.commit()
+            return len(runs)
+
     def get_inputs(self, run_id: str) -> list[MappingInput]:
         with self._session_factory() as session:
-            return list(session.scalars(select(MappingInput).where(MappingInput.run_id == run_id)))
+            return list(
+                session.scalars(
+                    select(MappingInput)
+                    .where(MappingInput.run_id == run_id)
+                    .order_by(
+                        MappingInput.source_kind,
+                        MappingInput.source_key,
+                        MappingInput.id,
+                    )
+                )
+            )
 
-    def get_review_inputs(
+    def get_inputs_page(
         self,
         run_id: str,
         *,
         offset: int = 0,
-        limit: int = 20,
+        limit: int = 100,
+        lifecycle_status: str | None = None,
         decision_status: str | None = None,
-    ) -> tuple[list[tuple[MappingInput, str, list[MappingCandidate]]], int]:
-        """Return one stable, database-paginated review page.
-
-        The synthetic ``pending`` status represents an input without a
-        decision.  Other statuses are source-independent strings so adapters
-        may add meaningful outcomes without changing Groundstore's contract.
-        """
+    ) -> tuple[list[tuple[MappingInput, str]], int]:
+        """Return a paginated input view with each input's latest status."""
         if offset < 0:
             raise ValueError("offset cannot be negative")
         if limit < 1:
@@ -392,13 +604,24 @@ class MappingStore:
         latest_decision = aliased(MappingDecision)
         decision_status_expression = func.coalesce(latest_decision.decision_status, "pending")
         with self._session_factory() as session:
+            base = (
+                select(MappingInput, decision_status_expression)
+                .select_from(MappingInput)
+                .outerjoin(latest_versions, latest_versions.c.input_id == MappingInput.id)
+                .outerjoin(
+                    latest_decision,
+                    and_(
+                        latest_decision.input_id == MappingInput.id,
+                        latest_decision.decision_version
+                        == latest_versions.c.decision_version,
+                    ),
+                )
+                .where(MappingInput.run_id == run_id)
+            )
             count_query = (
                 select(func.count(MappingInput.id))
                 .select_from(MappingInput)
-                .outerjoin(
-                    latest_versions,
-                    latest_versions.c.input_id == MappingInput.id,
-                )
+                .outerjoin(latest_versions, latest_versions.c.input_id == MappingInput.id)
                 .outerjoin(
                     latest_decision,
                     and_(
@@ -409,37 +632,50 @@ class MappingStore:
                 )
                 .where(MappingInput.run_id == run_id)
             )
-            page_query = (
-                select(MappingInput, decision_status_expression)
-                .select_from(MappingInput)
-                .outerjoin(
-                    latest_versions,
-                    latest_versions.c.input_id == MappingInput.id,
+            if lifecycle_status is not None:
+                base = base.where(MappingInput.lifecycle_status == lifecycle_status)
+                count_query = count_query.where(
+                    MappingInput.lifecycle_status == lifecycle_status
                 )
-                .outerjoin(
-                    latest_decision,
-                    and_(
-                        latest_decision.input_id == MappingInput.id,
-                        latest_decision.decision_version
-                        == latest_versions.c.decision_version,
-                    ),
-                )
-                .where(MappingInput.run_id == run_id)
-                .order_by(
-                    MappingInput.source_kind,
-                    MappingInput.source_key,
-                    MappingInput.id,
-                )
-                .offset(offset)
-                .limit(limit)
-            )
             if decision_status is not None:
+                base = base.where(decision_status_expression == decision_status)
                 count_query = count_query.where(decision_status_expression == decision_status)
-                page_query = page_query.where(decision_status_expression == decision_status)
-
+            rows = list(
+                session.execute(
+                    base.order_by(
+                        MappingInput.source_kind,
+                        MappingInput.source_key,
+                        MappingInput.id,
+                    )
+                    .offset(offset)
+                    .limit(limit)
+                )
+            )
             total = int(session.scalar(count_query) or 0)
-            rows = list(session.execute(page_query))
-            input_ids = [input_record.id for input_record, _ in rows]
+            return [(input_record, str(status)) for input_record, status in rows], total
+
+    def get_review_inputs(
+        self,
+        run_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+        decision_status: str | None = None,
+    ) -> tuple[list[tuple[MappingInput, str, list[MappingCandidate]]], int]:
+        """Return one stable, database-paginated review page.
+
+        The synthetic ``pending`` status represents an input without a
+        decision.  Other statuses are source-independent strings so adapters
+        may add meaningful outcomes without changing Groundstore's contract.
+        """
+        rows, total = self.get_inputs_page(
+            run_id,
+            offset=offset,
+            limit=limit,
+            decision_status=decision_status,
+        )
+        input_ids = [input_record.id for input_record, _ in rows]
+        with self._session_factory() as session:
             candidates_by_input: dict[str, list[MappingCandidate]] = {
                 input_id: [] for input_id in input_ids
             }
@@ -447,7 +683,12 @@ class MappingStore:
                 candidates = session.scalars(
                     select(MappingCandidate)
                     .where(MappingCandidate.input_id.in_(input_ids))
-                    .order_by(MappingCandidate.input_id, MappingCandidate.rank)
+                    .order_by(
+                        MappingCandidate.input_id,
+                        MappingCandidate.rank,
+                        MappingCandidate.created_at,
+                        MappingCandidate.id,
+                    )
                 )
                 for candidate in candidates:
                     candidates_by_input[candidate.input_id].append(candidate)
@@ -472,7 +713,9 @@ class MappingStore:
             )
             if target_system is not None:
                 query = query.where(MappingRun.target_system == target_system)
-            return session.scalar(query.order_by(MappingRun.updated_at.desc()))
+            return session.scalar(
+                query.order_by(MappingRun.updated_at.desc(), MappingRun.id.desc())
+            )
 
 
 def _id() -> str:

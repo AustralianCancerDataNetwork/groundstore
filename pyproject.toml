@@ -21,6 +21,18 @@ tui = [
     "psycopg[binary]>=3.2,<4",
 ]
 
+omop = [
+    "omop-alchemy>=1.1.0,<2",
+]
+
+cancer = [
+    "omop-alchemy>=1.2.0,<2",
+]
+
+hemonc = [
+    "hemonc-alchemy>=0.1.0,<1",
+]
+
 postgres = [
     "psycopg[binary]>=3.1,<4",
 ]

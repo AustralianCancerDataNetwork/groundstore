@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class LifecycleStatus(StrEnum):
@@ -81,6 +81,14 @@ class MappingCandidateSpec(BaseModel):
         if value is not None and not value.strip():
             raise ValueError("target identifiers cannot be blank")
         return value
+
+    @model_validator(mode="after")
+    def require_target_identifier(self) -> MappingCandidateSpec:
+        if self.target_concept_id is None and self.target_code is None:
+            raise ValueError(
+                "a candidate must provide target_concept_id or target_code"
+            )
+        return self
 
 
 class MappingEvidenceSpec(BaseModel):

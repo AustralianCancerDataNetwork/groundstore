@@ -171,6 +171,15 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+cancer = [
+    { name = "omop-alchemy" },
+]
+hemonc = [
+    { name = "hemonc-alchemy" },
+]
+omop = [
+    { name = "omop-alchemy" },
+]
 postgres = [
     { name = "psycopg", extra = ["binary"] },
 ]
@@ -183,8 +192,11 @@ tui = [
 [package.metadata]
 requires-dist = [
     { name = "groundskeeping", marker = "extra == 'tui'", specifier = ">=0.9.0,<0.10" },
+    { name = "hemonc-alchemy", marker = "extra == 'hemonc'", specifier = ">=0.1.0,<1" },
     { name = "oa-configurator", specifier = ">=1.3.0,<2" },
     { name = "omop-alchemy", marker = "extra == 'tui'", specifier = ">=1.1.0,<2" },
+    { name = "omop-alchemy", marker = "extra == 'omop'", specifier = ">=1.1.0,<2" },
+    { name = "omop-alchemy", marker = "extra == 'cancer'", specifier = ">=1.2.0,<2" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.1,<4" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'tui'", specifier = ">=3.2,<4" },
     { name = "pydantic", specifier = ">=2,<3" },
@@ -193,7 +205,24 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0.45,<3" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.59" },
 ]
-provides-extras = ["dev", "postgres", "tui"]
+provides-extras = ["cancer", "dev", "hemonc", "omop", "postgres", "tui"]
+
+[[package]]
+name = "hemonc-alchemy"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "oa-configurator" },
+    { name = "orm-loader" },
+    { name = "pandas" },
+    { name = "rich" },
+    { name = "sqlalchemy" },
+    { name = "typer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/54/57/c72c8342f0c6d314cfed114f1dc6778ce77517ce41ab4686afeaa83c4397/hemonc_alchemy-0.1.0.tar.gz", hash = "sha256:b1584e7a10842c3311b5661d8f3fbb53c5912339121ed6ec4916dec4de22e194", size = 342236, upload-time = "2026-09-06T06:26:56.299Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/83/77/44c1a35a806da612cf95223f85cba9a97bc09348238d9e7e8592a9ca6376/hemonc_alchemy-0.1.0-py3-none-any.whl", hash = "sha256:b534762eca7351b68c0018109159610185023bba6aa5def75c0e975125881060", size = 115992, upload-time = "2026-09-06T06:26:54.734Z" },
+]
 
 [[package]]
 name = "iniconfig"

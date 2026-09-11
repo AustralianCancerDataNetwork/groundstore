@@ -32,6 +32,12 @@ from textual.widget import Widget
 from .cdm import CdmConceptLookup
 from .context import MappingReadContext
 from .context import MappingReviewPage as ReviewPageData
+from .enrichment import (
+    MappingCandidateEnricher,
+    MappingItemEnricher,
+    apply_candidate_enrichers,
+    close_enrichers,
+)
 from .store import MappingStore
 
 MAPPING_REVIEW_ROUTE = PageRoute(
@@ -60,7 +66,8 @@ class MappingReviewOperatorPage(Widget):
         read_context: MappingReadContext,
         *,
         source_namespace: str,
-        concept_lookup: CdmConceptLookup,
+        concept_lookup: MappingItemEnricher,
+        candidate_enrichers: Sequence[MappingCandidateEnricher] = (),
         run_id: str | None = None,
         target_system: str | None = None,
         page_size: int = 20,
@@ -70,6 +77,7 @@ class MappingReviewOperatorPage(Widget):
             raise ValueError("page_size must be positive")
         self._read_context = read_context
         self._concept_lookup = concept_lookup
+        self._candidate_enrichers = tuple(candidate_enrichers)
         self._source_namespace = source_namespace
         self._run_id = run_id
         self._target_system = target_system
@@ -141,6 +149,11 @@ class MappingReviewOperatorPage(Widget):
                 for candidate in item.get("candidates", [])
                 if candidate.get("cdm_concept") is not None
             }
+            payload["target_enrichments"] = {
+                str(candidate["target_concept_id"]): candidate["target_enrichments"]
+                for candidate in item.get("candidates", [])
+                if candidate.get("target_enrichments") is not None
+            }
         context.surface.show_detail(
             self.route.key,
             TextView(
@@ -169,10 +182,10 @@ class MappingReviewOperatorPage(Widget):
 
         self._page_count = max(1, page.page_count)
         self._page = min(page.page, self._page_count)
-        self._items = {
-            str(item["input_id"]): item
-            for item in self._concept_lookup.enrich_items(page.items)
-        }
+        enriched_items = apply_candidate_enrichers(
+            self._concept_lookup.enrich_items(page.items), self._candidate_enrichers
+        )
+        self._items = {str(item["input_id"]): item for item in enriched_items}
         pagination = Pagination(
             page=self._page,
             page_size=page.page_size,
@@ -215,7 +228,8 @@ def create_mapping_review_app(
     *,
     source_namespace: str,
     cdm_database: ResolvedCDMDatabase | None = None,
-    concept_lookup: CdmConceptLookup | None = None,
+    concept_lookup: MappingItemEnricher | None = None,
+    candidate_enrichers: Sequence[MappingCandidateEnricher] = (),
     run_id: str | None = None,
     target_system: str | None = None,
     page_size: int = 20,
@@ -233,6 +247,7 @@ def create_mapping_review_app(
         MappingReadContext(store),
         source_namespace=source_namespace,
         concept_lookup=resolved_lookup,
+        candidate_enrichers=candidate_enrichers,
         run_id=run_id,
         target_system=target_system,
         page_size=page_size,
@@ -253,7 +268,8 @@ def run_mapping_review(
     *,
     source_namespace: str,
     cdm_database: ResolvedCDMDatabase | None = None,
-    concept_lookup: CdmConceptLookup | None = None,
+    concept_lookup: MappingItemEnricher | None = None,
+    candidate_enrichers: Sequence[MappingCandidateEnricher] = (),
     run_id: str | None = None,
     target_system: str | None = None,
     page_size: int = 20,
@@ -271,13 +287,15 @@ def run_mapping_review(
             store,
             source_namespace=source_namespace,
             concept_lookup=lookup,
+            candidate_enrichers=candidate_enrichers,
             run_id=run_id,
             target_system=target_system,
             page_size=page_size,
         ).run()
     finally:
+        close_enrichers(candidate_enrichers)
         if owns_lookup:
-            lookup.close()
+            close_enrichers((lookup,))
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -316,7 +334,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             page_size=args.page_size,
         )
     finally:
-        store.engine.dispose()
+        store.close()
 
 
 def _status_for(decision_status: str | None) -> SemanticStatus:
@@ -417,5 +435,17 @@ def _summary_detail(item: dict[str, Any]) -> KeyValueView:
             ),
             ("Candidates", _candidate_summary(item)),
             ("Match", _match_summary(item)),
+            ("Target enrichments", _enrichment_summary(item)),
         ),
     )
+
+
+def _enrichment_summary(item: dict[str, Any]) -> str:
+    summaries = []
+    for candidate in item.get("candidates", []):
+        namespaces = sorted(candidate.get("target_enrichments", {}))
+        if namespaces:
+            summaries.append(
+                f"{candidate.get('target_concept_id', '?')}: {', '.join(namespaces)}"
+            )
+    return "; ".join(summaries) or "-"

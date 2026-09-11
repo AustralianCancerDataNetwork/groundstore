@@ -68,6 +68,48 @@ class MappingReviewPage(BaseModel):
     items: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class MappingRunSummary(BaseModel):
+    """Stable JSON contract for one run's metadata and coverage counts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "groundstore.mapping-run-summary.v1"
+    run_id: str
+    source_namespace: str
+    source_fingerprint: str
+    source_snapshot: dict[str, Any]
+    target_system: str
+    target_release: str | None
+    algorithm_version: str
+    policy_version: str
+    run_lifecycle_status: str
+    last_error: str | None
+    created_at: str
+    updated_at: str
+    input_count: int = Field(ge=0)
+    lifecycle_counts: dict[str, int] = Field(default_factory=dict)
+    decision_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class MappingProgress(BaseModel):
+    """Stable JSON contract for polling one mapping run's progress."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "groundstore.mapping-progress.v1"
+    run_id: str
+    run_status: str
+    total_inputs: int = Field(ge=0)
+    queued_count: int = Field(ge=0)
+    active_count: int = Field(ge=0)
+    complete_count: int = Field(ge=0)
+    retryable_count: int = Field(ge=0)
+    blocked_count: int = Field(ge=0)
+    remaining_count: int = Field(ge=0)
+    decision_counts: dict[str, int] = Field(default_factory=dict)
+    last_updated_at: str
+
+
 @dataclass(frozen=True, slots=True)
 class MappingReadContext:
     """Read-only Groundstore façade for host tools and review consumers."""
@@ -96,6 +138,14 @@ class MappingReadContext:
             "latest_run": _run_payload(run),
             "coverage": self.store.coverage(run.id),
         }
+
+    def run_summary(self, run_id: str) -> MappingRunSummary:
+        """Return a detached, JSON-safe summary for one mapping run."""
+        return MappingRunSummary.model_validate(self.store.run_summary(run_id))
+
+    def progress(self, run_id: str) -> MappingProgress:
+        """Return a detached, JSON-safe progress snapshot for one run."""
+        return MappingProgress.model_validate(self.store.progress(run_id))
 
     def evidence_packet(self, input_id: str) -> MappingEvidencePacket:
         """Build a detached packet with candidates, evidence, and decision history."""

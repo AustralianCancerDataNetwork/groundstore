@@ -1,4 +1,5 @@
 import pytest
+from textual.widgets import TextArea
 
 pytest.importorskip("groundskeeping")
 
@@ -84,6 +85,7 @@ def test_mapping_review_app_renders_groundstore_page(store):
     async def run():
         async with app.run_test() as pilot:
             row_key = app._workbench.rows_table.ordered_rows[0].key.value
+            assert row_key is not None
             row = app._workbench.rows_table.get_row(row_key)
             assert "fluorouracil" in str(row[1])
             assert "Example drug" in str(row[3])
@@ -94,9 +96,8 @@ def test_mapping_review_app_renders_groundstore_page(store):
             app._workbench.rows_table.focus()
             await pilot.press("enter")
             await pilot.pause()
-            assert "groundstore.mapping-review-handoff.v1" in app.query_one(
-                "#context"
-            ).text
+            context = app.query_one("#context", expect_type=TextArea)
+            assert "groundstore.mapping-review-handoff.v1" in context.text
             await pilot.press("q")
 
     import asyncio

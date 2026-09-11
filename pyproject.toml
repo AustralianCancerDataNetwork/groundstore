@@ -15,6 +15,11 @@ dev = [
     "ruff>=0.4,<1",
     "ty>=0.0.59",
 ]
+tui = [
+    "groundskeeping>=0.9.0,<0.10",
+    "omop-alchemy>=1.1.0,<2",
+    "psycopg[binary]>=3.2,<4",
+]
 
 postgres = [
     "psycopg[binary]>=3.1,<4",
@@ -23,6 +28,9 @@ postgres = [
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[project.scripts]
+groundstore-review = "groundstore.tui:main"
 
 [tool.hatch.version]
 source = "vcs"

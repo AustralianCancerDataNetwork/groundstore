@@ -9,12 +9,15 @@ from .context import (
     MappingRunSummary,
 )
 from .contracts import (
+    DecisionOrigin,
     DecisionStatus,
     LifecycleStatus,
     MappingCandidateSpec,
     MappingDecisionSpec,
     MappingEvidenceSpec,
     MappingInputSpec,
+    MappingOverrideImportResult,
+    MappingOverrideSpec,
     MappingRunSpec,
 )
 from .engine import create_groundstore_engine, create_schema
@@ -28,6 +31,7 @@ from .enrichment import (
 from .store import MappingStore
 
 __all__ = [
+    "DecisionOrigin",
     "DecisionStatus",
     "LifecycleStatus",
     "MappingCandidateEnricher",
@@ -37,6 +41,8 @@ __all__ = [
     "MappingEvidenceSpec",
     "MappingInputSpec",
     "MappingItemEnricher",
+    "MappingOverrideImportResult",
+    "MappingOverrideSpec",
     "MappingProgress",
     "MappingReadContext",
     "MappingReviewHandoff",

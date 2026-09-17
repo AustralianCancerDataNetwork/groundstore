@@ -89,6 +89,7 @@ class MappingRunSummary(BaseModel):
     input_count: int = Field(ge=0)
     lifecycle_counts: dict[str, int] = Field(default_factory=dict)
     decision_counts: dict[str, int] = Field(default_factory=dict)
+    decision_origin_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class MappingProgress(BaseModel):
@@ -107,6 +108,8 @@ class MappingProgress(BaseModel):
     blocked_count: int = Field(ge=0)
     remaining_count: int = Field(ge=0)
     decision_counts: dict[str, int] = Field(default_factory=dict)
+    decision_origin_counts: dict[str, int] = Field(default_factory=dict)
+    override_count: int = Field(default=0, ge=0)
     last_updated_at: str
 
 
@@ -381,6 +384,7 @@ def _decision_payload(decision: MappingDecision) -> dict[str, Any]:
         "decision_status": decision.decision_status,
         "outcome_code": decision.outcome_code,
         "reason_codes": decision.reason_codes,
+        "decision_origin": decision.decision_origin,
         "decided_by": decision.decided_by,
         "metadata": decision.metadata_,
         "decided_at": decision.decided_at.isoformat(),

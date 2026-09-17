@@ -19,6 +19,7 @@ from sqlalchemy import (
     and_,
     column,
     or_,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -184,6 +185,12 @@ class MappingDecision(Base):
     __tablename__ = "mapping_decisions"
     __table_args__ = (
         UniqueConstraint("input_id", "decision_version", name="uq_mapping_decision_version"),
+        Index("ix_mapping_decisions_origin", "decision_origin"),
+        CheckConstraint(
+            "decision_origin IS NULL OR decision_origin IN "
+            "('algorithm', 'manual_override', 'operator_review')",
+            name="ck_mapping_decision_origin",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -192,6 +199,7 @@ class MappingDecision(Base):
     )
     decision_version: Mapped[int] = mapped_column(Integer, nullable=False)
     decision_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    decision_origin: Mapped[str | None] = mapped_column(String(32), nullable=True)
     outcome_code: Mapped[str | None] = mapped_column(String(150))
     reason_codes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     decided_by: Mapped[str | None] = mapped_column(String(255))
@@ -208,6 +216,49 @@ class MappingDecision(Base):
     history: Mapped[list[MappingDecisionEvent]] = relationship(
         back_populates="decision", cascade="all, delete-orphan"
     )
+
+
+class MappingOverride(Base):
+    """A durable manual decision independent of any one mapping run."""
+
+    __tablename__ = "mapping_overrides"
+    __table_args__ = (
+        Index(
+            "uq_mapping_override_active",
+            "source_namespace",
+            "source_kind",
+            "source_identity",
+            "target_system",
+            unique=True,
+            sqlite_where=text("retired_at IS NULL"),
+            postgresql_where=text("retired_at IS NULL"),
+        ),
+        Index(
+            "ix_mapping_overrides_namespace",
+            "source_namespace",
+            "source_kind",
+            "source_identity",
+        ),
+        CheckConstraint(
+            "decision_status IN ('mapped', 'unmappable')",
+            name="ck_mapping_override_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_namespace: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_identity: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_system: Mapped[str] = mapped_column(String(100), nullable=False)
+    decision_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_reference: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    confirmed_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    authored_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    authored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retired_by: Mapped[str | None] = mapped_column(String(255))
+    retirement_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class MappingDecisionCandidate(Base):

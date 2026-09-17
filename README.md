@@ -37,6 +37,14 @@ The store does not decide whether a candidate is correct. It does not impose a u
 7. Record reviewed outcomes with `MappingStore.record_decision(...)`. Decisions are versioned and previous versions remain available.
 8. Use `MappingReadContext` or the store's query methods to report progress, inspect coverage, build review pages, and hand a complete review packet to another interface.
 
+Durable manual corrections live outside a run. Create a `MappingOverrideSpec` with the
+adapter's source identity and confirmed fingerprint, then call
+`MappingStore.upsert_override(...)`. Replacements retire the previous row atomically;
+`get_override(...)` only returns the active row. `import_overrides(...)` validates the
+whole batch before writing, so a malformed or duplicate row cannot leave a partial seed
+set. The mapper consumer is responsible for comparing the current fingerprint and for
+recording an applied override as a `manual_override` decision origin.
+
 ## Installation
 
 The base package contains the contracts, models, store, and read APIs:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -25,6 +25,14 @@ class DecisionStatus(StrEnum):
     AMBIGUOUS = "ambiguous"
     UNMAPPABLE = "unmappable"
     NEEDS_REVIEW = "needs_review"
+
+
+class DecisionOrigin(StrEnum):
+    """How the latest mapping decision was produced."""
+
+    ALGORITHM = "algorithm"
+    MANUAL_OVERRIDE = "manual_override"
+    OPERATOR_REVIEW = "operator_review"
 
 
 class MappingRunSpec(BaseModel):
@@ -114,3 +122,53 @@ class MappingDecisionSpec(BaseModel):
     reason_codes: list[str] = Field(default_factory=list)
     decided_by: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    decision_origin: DecisionOrigin | None = None
+
+
+class MappingOverrideSpec(BaseModel):
+    """A durable, source-specific mapping decision guarded by a fingerprint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_namespace: str = Field(min_length=1, max_length=100)
+    source_kind: str = Field(min_length=1, max_length=100)
+    source_identity: str = Field(min_length=1, max_length=255)
+    target_system: str = Field(min_length=1, max_length=100)
+    decision_status: Literal[DecisionStatus.MAPPED, DecisionStatus.UNMAPPABLE]
+    target_reference: dict[str, Any] | None = None
+    confirmed_fingerprint: str = Field(min_length=1, max_length=128)
+    rationale: str = Field(min_length=1)
+    authored_by: str = Field(min_length=1, max_length=255)
+
+    @field_validator("source_namespace", "source_kind", "source_identity", "target_system", "confirmed_fingerprint", "authored_by")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("override identity and provenance fields cannot be blank")
+        return value
+
+    @field_validator("rationale")
+    @classmethod
+    def reject_blank_rationale(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("rationale cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_target_reference(self) -> MappingOverrideSpec:
+        if self.decision_status is DecisionStatus.MAPPED and not self.target_reference:
+            raise ValueError("mapped overrides require a target_reference")
+        if self.decision_status is DecisionStatus.UNMAPPABLE and self.target_reference:
+            raise ValueError("unmappable overrides cannot include a target_reference")
+        return self
+
+
+class MappingOverrideImportResult(BaseModel):
+    """Outcome of an all-or-nothing override import."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    created: int = Field(default=0, ge=0)
+    replaced: int = Field(default=0, ge=0)
+    unchanged: int = Field(default=0, ge=0)
+    rejected: list[dict[str, Any]] = Field(default_factory=list)

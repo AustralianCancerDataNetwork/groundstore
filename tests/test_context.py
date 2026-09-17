@@ -69,18 +69,21 @@ def test_read_context_builds_json_safe_packet_and_review_handoff(store):
     assert payload["input"]["source_key"] == "123"
     assert payload["candidates"][0]["evidence"][0]["evidence_key"] == "source-name"
     assert payload["decision"]["selected_candidate_ids"] == [candidate.id]
+    assert payload["decision"]["decision_origin"] == "operator_review"
     assert payload["decision"]["history"][0]["event_type"] == "decision_recorded"
     assert context.status("pbs", target_system="omop")["coverage"]["input_count"] == 1
     summary = context.run_summary(run.id)
     assert summary.input_count == 1
     assert summary.lifecycle_counts == {"pending": 1}
     assert summary.decision_counts == {"mapped": 1}
+    assert summary.decision_origin_counts == {"operator_review": 1}
     progress = context.progress(run.id)
     assert progress.total_inputs == 1
     assert progress.complete_count == 0
     assert progress.queued_count == 1
     assert progress.remaining_count == 1
     assert progress.decision_counts == {"mapped": 1}
+    assert progress.override_count == 0
 
     handoff = context.review_handoff(
         input_record.id, requested_by="groundworkers", metadata={"queue": "pbs"}

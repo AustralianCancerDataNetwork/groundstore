@@ -4,22 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from types import TracebackType
-from typing import Any, Self, cast
+from typing import Any, Literal, Self, cast
 from uuid import uuid4
 
 from oa_configurator import ResolvedDatabase, Resolver
+from pydantic import ValidationError
 from sqlalchemy import Engine, and_, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import aliased, sessionmaker
+from sqlalchemy.orm import Session, aliased, sessionmaker
 
 from .contracts import (
+    DecisionOrigin,
     MappingCandidateSpec,
     MappingDecisionSpec,
     MappingEvidenceSpec,
     MappingInputSpec,
+    MappingOverrideImportResult,
+    MappingOverrideSpec,
     MappingRunSpec,
 )
 from .engine import create_groundstore_engine, create_schema
@@ -30,6 +34,7 @@ from .models import (
     MappingDecisionEvent,
     MappingEvidence,
     MappingInput,
+    MappingOverride,
     MappingRun,
 )
 
@@ -342,11 +347,17 @@ class MappingStore:
                 .order_by(MappingDecision.decision_version.desc())
             )
             version = 1 if latest is None else latest.decision_version + 1
+            decision_origin = spec.decision_origin or (
+                DecisionOrigin.OPERATOR_REVIEW
+                if "operator_review" in spec.reason_codes or spec.decided_by is not None
+                else DecisionOrigin.ALGORITHM
+            )
             decision = MappingDecision(
                 id=_id(),
                 input_id=input_id,
                 decision_version=version,
                 decision_status=spec.decision_status.value,
+                decision_origin=decision_origin.value,
                 outcome_code=spec.outcome_code,
                 reason_codes=spec.reason_codes,
                 decided_by=spec.decided_by,
@@ -361,6 +372,7 @@ class MappingStore:
                     detail={
                         "decision_status": spec.decision_status.value,
                         "decision_version": version,
+                        "decision_origin": decision_origin.value,
                     },
                     created_at=_now(),
                 )
@@ -368,6 +380,175 @@ class MappingStore:
             session.add(decision)
             session.commit()
             return decision
+
+    def upsert_override(self, spec: MappingOverrideSpec) -> MappingOverride:
+        """Create or replace the active override for one source identity atomically."""
+        with self._session_factory() as session:
+            override, _outcome = self._upsert_override_in_session(session, spec)
+            session.commit()
+            return override
+
+    def get_override(
+        self,
+        source_namespace: str,
+        source_kind: str,
+        source_identity: str,
+        target_system: str,
+    ) -> MappingOverride | None:
+        """Return the active override for an exact source/target identity."""
+        with self._session_factory() as session:
+            return session.scalar(
+                select(MappingOverride).where(
+                    MappingOverride.source_namespace == source_namespace,
+                    MappingOverride.source_kind == source_kind,
+                    MappingOverride.source_identity == source_identity,
+                    MappingOverride.target_system == target_system,
+                    MappingOverride.retired_at.is_(None),
+                )
+            )
+
+    def find_overrides(
+        self,
+        source_namespace: str,
+        *,
+        include_retired: bool = False,
+    ) -> list[MappingOverride]:
+        """List overrides in deterministic source order."""
+        with self._session_factory() as session:
+            query = select(MappingOverride).where(
+                MappingOverride.source_namespace == source_namespace
+            )
+            if not include_retired:
+                query = query.where(MappingOverride.retired_at.is_(None))
+            query = query.order_by(
+                MappingOverride.source_kind,
+                MappingOverride.source_identity,
+                MappingOverride.id,
+            )
+            return list(session.scalars(query))
+
+    def retire_override(
+        self,
+        override_id: str,
+        *,
+        reason: str,
+        retired_by: str,
+    ) -> MappingOverride:
+        """Retire an override while retaining its audit history."""
+        if not reason.strip() or not retired_by.strip():
+            raise ValueError("retirement reason and retired_by are required")
+        with self._session_factory() as session:
+            override = session.get(MappingOverride, override_id)
+            if override is None:
+                raise KeyError(f"unknown mapping override: {override_id}")
+            if override.retired_at is None:
+                override.retired_at = _now()
+                override.retired_by = retired_by
+                override.retirement_reason = reason
+                session.commit()
+            return override
+
+    def import_overrides(
+        self,
+        specs: Sequence[MappingOverrideSpec | Mapping[str, Any]],
+    ) -> MappingOverrideImportResult:
+        """Import a batch atomically, rejecting duplicate identities as one unit."""
+        rows: list[MappingOverrideSpec] = []
+        rejected: list[dict[str, Any]] = []
+        for index, raw in enumerate(specs):
+            try:
+                rows.append(
+                    raw
+                    if isinstance(raw, MappingOverrideSpec)
+                    else MappingOverrideSpec.model_validate(raw)
+                )
+            except ValidationError as exc:
+                rejected.append(
+                    {
+                        "row": index,
+                        "reason": "invalid_override",
+                        "detail": exc.errors(include_url=False),
+                    }
+                )
+        if rejected:
+            return MappingOverrideImportResult(rejected=rejected)
+
+        seen: set[tuple[str, str, str, str]] = set()
+        for index, spec in enumerate(rows):
+            identity = (
+                spec.source_namespace,
+                spec.source_kind,
+                spec.source_identity,
+                spec.target_system,
+            )
+            if identity in seen:
+                rejected.append({"row": index, "reason": "duplicate_source_identity"})
+            seen.add(identity)
+        if rejected:
+            return MappingOverrideImportResult(rejected=rejected)
+
+        with self._session_factory() as session:
+            created = 0
+            replaced = 0
+            unchanged = 0
+            for spec in rows:
+                _override, outcome = self._upsert_override_in_session(session, spec)
+                if outcome == "replaced":
+                    replaced += 1
+                elif outcome == "created":
+                    created += 1
+                else:
+                    unchanged += 1
+            session.commit()
+            return MappingOverrideImportResult(
+                created=created,
+                replaced=replaced,
+                unchanged=unchanged,
+            )
+
+    def _upsert_override_in_session(
+        self,
+        session: Session,
+        spec: MappingOverrideSpec,
+    ) -> tuple[MappingOverride, Literal["created", "replaced", "unchanged"]]:
+        """Apply one override using the caller's transaction."""
+        identity_filter = (
+            MappingOverride.source_namespace == spec.source_namespace,
+            MappingOverride.source_kind == spec.source_kind,
+            MappingOverride.source_identity == spec.source_identity,
+            MappingOverride.target_system == spec.target_system,
+            MappingOverride.retired_at.is_(None),
+        )
+        current = session.scalar(select(MappingOverride).where(*identity_filter).with_for_update())
+        if current is not None:
+            same = (
+                current.decision_status == spec.decision_status.value
+                and current.target_reference == spec.target_reference
+                and current.confirmed_fingerprint == spec.confirmed_fingerprint
+                and current.rationale == spec.rationale
+                and current.authored_by == spec.authored_by
+            )
+            if same:
+                return current, "unchanged"
+            current.retired_at = _now()
+            current.retired_by = spec.authored_by
+            current.retirement_reason = "replaced_by_new_override"
+            session.flush()
+        override = MappingOverride(
+            id=_id(),
+            source_namespace=spec.source_namespace,
+            source_kind=spec.source_kind,
+            source_identity=spec.source_identity,
+            target_system=spec.target_system,
+            decision_status=spec.decision_status.value,
+            target_reference=spec.target_reference,
+            confirmed_fingerprint=spec.confirmed_fingerprint,
+            rationale=spec.rationale,
+            authored_by=spec.authored_by,
+            authored_at=_now(),
+        )
+        session.add(override)
+        return override, "replaced" if current is not None else "created"
 
     def latest_decision(self, input_id: str) -> MappingDecision | None:
         with self._session_factory() as session:
@@ -449,11 +630,33 @@ class MappingStore:
                 )
                 .group_by(MappingDecision.decision_status)
             )
+            origin_expression = func.coalesce(
+                MappingDecision.decision_origin,
+                DecisionOrigin.ALGORITHM.value,
+            )
+            origin_rows = session.execute(
+                select(
+                    origin_expression,
+                    func.count(MappingDecision.id),
+                )
+                .join(
+                    latest_versions,
+                    and_(
+                        latest_versions.c.input_id == MappingDecision.input_id,
+                        latest_versions.c.decision_version
+                        == MappingDecision.decision_version,
+                    ),
+                )
+                .group_by(origin_expression)
+            )
             return {
                 "input_count": sum(lifecycle_status.values()),
                 "lifecycle_status": lifecycle_status,
                 "decision_status": {
                     status: int(count) for status, count in decision_rows
+                },
+                "decision_origin": {
+                    origin: int(count) for origin, count in origin_rows
                 },
             }
 
@@ -484,6 +687,7 @@ class MappingStore:
             "input_count": coverage["input_count"],
             "lifecycle_counts": coverage["lifecycle_status"],
             "decision_counts": coverage["decision_status"],
+            "decision_origin_counts": coverage["decision_origin"],
         }
 
     def progress(self, run_id: str) -> dict[str, Any]:
@@ -522,6 +726,10 @@ class MappingStore:
             "blocked_count": incomplete,
             "remaining_count": coverage["input_count"] - complete,
             "decision_counts": coverage["decision_status"],
+            "decision_origin_counts": coverage["decision_origin"],
+            "override_count": coverage["decision_origin"].get(
+                DecisionOrigin.MANUAL_OVERRIDE.value, 0
+            ),
             "last_updated_at": last_updated.isoformat(),
         }
 

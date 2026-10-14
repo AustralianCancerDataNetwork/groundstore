@@ -109,11 +109,21 @@ Deletion cascades through the selected run's inputs, candidates, evidence, decis
 
 ## Development
 
+Groundstore 0.5 targets oa-configurator 2 and omop-alchemy 2. OMOP enrichment
+opens the resolved vocabulary endpoint, including deployments where vocabulary
+is separate from the primary CDM database. These read-only lookups do not write
+schema claims. SQLite database configuration must omit schema settings.
+
 ```bash
-uv sync --extra dev --extra tui --extra omop --extra hemonc
+uv sync --extra dev --extra tui --extra omop --extra cancer --extra hemonc
 uv run ty check src/
 uv run ruff check .
 uv run pytest -q
 ```
 
-The optional cancer provider uses the public query interfaces from a compatible `omop-alchemy` release. The provider's extra is intentionally constrained to that helper-containing release; once it is published, add `--extra cancer` to the sync command and refresh the lock file.
+## Schema migrations
+
+The current SQLAlchemy schema is the baseline. Historical ad hoc SQL under
+`scripts/` is local-only and excluded from version control and distributions.
+Future incompatible schema changes will ship as versioned Alembic migrations.
+`create_schema()` creates missing tables; it does not migrate existing tables.

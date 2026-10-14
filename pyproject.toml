@@ -4,7 +4,7 @@ dynamic = ["version"]
 description = "Shared mapping-task contracts for Groundworkers workflows."
 requires-python = ">=3.12"
 dependencies = [
-    "oa-configurator>=1.3.0,<2",
+    "oa-configurator>=2,<3",
     "pydantic>=2,<3",
     "sqlalchemy>=2.0.45,<3",
 ]
@@ -17,16 +17,16 @@ dev = [
 ]
 tui = [
     "groundskeeping>=0.9.0,<0.10",
-    "omop-alchemy>=1.1.0,<2",
+    "omop-alchemy>=2,<3",
     "psycopg[binary]>=3.2,<4",
 ]
 
 omop = [
-    "omop-alchemy>=1.1.0,<2",
+    "omop-alchemy>=2,<3",
 ]
 
 cancer = [
-    "omop-alchemy>=1.2.0,<2",
+    "omop-alchemy>=2,<3",
 ]
 
 hemonc = [

@@ -13,7 +13,6 @@ import sqlalchemy as sa
 from oa_configurator import ResolvedCDMDatabase
 from omop_alchemy.cdm.model.vocabulary import Concept
 from omop_alchemy.cdm.query import ConceptFilter
-from omop_alchemy.config import create_cdm_engine
 from omop_alchemy.toolkit.core.concepts import (
     OMOPConceptSource,
     RuntimeConceptSetSpec,
@@ -26,7 +25,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.engine import Engine, RowMapping
 from sqlalchemy.orm import Session
 
-from .cdm import CdmConceptLookup
+from .cdm import CdmConceptLookup, _create_vocabulary_engine
 from .enrichment import enrich_candidate_targets
 
 
@@ -83,19 +82,17 @@ class CancerConditionResolver:
         unknown_concept_id: int | None = None,
     ) -> CancerConditionResolver:
         """Create a resolver from an already-resolved OMOP database resource."""
-        return cls(
-            create_cdm_engine(database),
-            CancerConditionPolicy(
-                cancer_parent_concept_ids=tuple(cancer_parent_concept_ids),
-                vocabulary_ids=tuple(vocabulary_ids),
-                include_synonyms=include_synonyms,
-                require_standard=require_standard,
-                include_classification=include_classification,
-                require_active=require_active,
-                include_non_standard_descendants=include_non_standard_descendants,
-                unknown_concept_id=unknown_concept_id,
-            ),
+        policy = CancerConditionPolicy(
+            cancer_parent_concept_ids=tuple(cancer_parent_concept_ids),
+            vocabulary_ids=tuple(vocabulary_ids),
+            include_synonyms=include_synonyms,
+            require_standard=require_standard,
+            include_classification=include_classification,
+            require_active=require_active,
+            include_non_standard_descendants=include_non_standard_descendants,
+            unknown_concept_id=unknown_concept_id,
         )
+        return cls(_create_vocabulary_engine(database), policy)
 
     def resolve(self, term: str | None) -> int | None:
         """Resolve an unambiguous condition term to an OMOP concept ID."""
@@ -196,10 +193,10 @@ class CancerConditionLookup:
         unknown_concept_id: int | None = None,
     ) -> CancerConditionLookup:
         """Create a lookup from an already-resolved OMOP database resource."""
-        engine = create_cdm_engine(database)
-        policy = CancerConditionPolicy(
-            cancer_parent_concept_ids=tuple(cancer_parent_concept_ids),
-            vocabulary_ids=tuple(vocabulary_ids),
+        resolver = CancerConditionResolver.from_database(
+            database,
+            cancer_parent_concept_ids=cancer_parent_concept_ids,
+            vocabulary_ids=vocabulary_ids,
             include_synonyms=include_synonyms,
             require_standard=require_standard,
             include_classification=include_classification,
@@ -207,7 +204,7 @@ class CancerConditionLookup:
             include_non_standard_descendants=include_non_standard_descendants,
             unknown_concept_id=unknown_concept_id,
         )
-        return cls(engine, policy)
+        return cls(resolver.engine, resolver.policy, resolver=resolver)
 
     def resolve(self, term: str | None) -> int | None:
         """Resolve one source condition term to an OMOP concept ID."""

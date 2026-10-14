@@ -35,6 +35,9 @@ data/
 site/
 _design/
 
+# Historical ad hoc schema scripts; future changes use Alembic migrations.
+/scripts/
+
 # Editors and operating-system files
 .DS_Store
 .idea/

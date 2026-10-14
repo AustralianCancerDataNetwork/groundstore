@@ -11,11 +11,18 @@ from oa_configurator import ResolvedCDMDatabase
 from omop_alchemy.cdm.model import ConceptRow
 from omop_alchemy.cdm.model.vocabulary import ConceptView, Drug_Strength
 from omop_alchemy.cdm.query import ConceptFilter
-from omop_alchemy.config import create_cdm_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .enrichment import enrich_candidate_targets
+
+
+def _create_vocabulary_engine(database: ResolvedCDMDatabase) -> Engine:
+    """Open vocabulary reads without writing schema claims or retaining a CDM pool."""
+    primary, vocabulary = database.create_engines(register_claims=False)
+    if primary is not vocabulary:
+        primary.dispose()
+    return vocabulary
 
 
 class CdmConceptLookup:
@@ -27,7 +34,7 @@ class CdmConceptLookup:
     @classmethod
     def from_database(cls, database: ResolvedCDMDatabase) -> CdmConceptLookup:
         """Create a lookup from an already-resolved CDM database resource."""
-        return cls(create_cdm_engine(database))
+        return cls(_create_vocabulary_engine(database))
 
     def lookup(self, concept_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         """Return display metadata for the supplied OMOP concept IDs."""
@@ -92,8 +99,7 @@ class DrugStrengthLookup:
     @classmethod
     def from_database(cls, database: ResolvedCDMDatabase) -> DrugStrengthLookup:
         """Create an optional drug-strength lookup from a resolved CDM resource."""
-        engine = create_cdm_engine(database)
-        return cls(engine, concept_lookup=CdmConceptLookup(engine))
+        return cls(_create_vocabulary_engine(database))
 
     def lookup(
         self, drug_concept_ids: Iterable[str]
